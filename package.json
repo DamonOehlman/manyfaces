@@ -1,0 +1,24 @@
+{
+  "name": "manyfaces",
+  "version": "1.0.0",
+  "description": "A simple demonstration of how using rtc.io and awesome modules makes like super cool",
+  "main": "index.js",
+  "private": true,
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DamonOehlman/manyfaces.git"
+  },
+  "keywords": [
+    "rtc.io",
+    "demo"
+  ],
+  "author": "Damon Oehlman <damon.oehlman@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/DamonOehlman/manyfaces/issues"
+  },
+  "homepage": "https://github.com/DamonOehlman/manyfaces"
+}
