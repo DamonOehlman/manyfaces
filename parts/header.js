@@ -6,6 +6,7 @@ var po = require('pull-observable');
 module.exports = function(eve) {
   var name = h('input', { placeholder: 'Your Name' });
   var join = h('button', 'Join');
+  var snap = h('button', 'Snap');
 
   pull(
     po(o.input(name)),
@@ -18,5 +19,5 @@ module.exports = function(eve) {
     eve('app:join');
   });
 
-  return h('div', { class: 'local-details' }, name, join);
+  return h('header', { class: 'local-details' }, name, join, snap);
 };

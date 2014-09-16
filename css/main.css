@@ -1,0 +1,18 @@
+body, html {
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  margin: 0;
+}
+
+header {
+  background: #eee;
+  border-bottom: 1px solid #e8e8e8;
+  padding: 10px;
+  display: flex;
+}
+
+header > input {
+  flex: 1;
+  margin-right: 10px;
+}

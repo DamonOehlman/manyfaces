@@ -5,16 +5,21 @@ module.exports = function(eve) {
   var container = h('div');
   var screen = vdom.screenSize();
 
+  function resizeContainer() {
+    var headerHeight = document.querySelector('header').getBoundingClientRect().height;
+    var size = screen.subtract({ x: 0, y: headerHeight }, true);
+
+    console.log(headerHeight);
+    console.log(size);
+    container.rec.size.set(size);
+  }
+
   eve.on('app:ready', function() {
     // apply the vec2 layout
     require('vec2-layout')(container);
 
-    // initilaise the container size
-    container.rec.size.set(screen);
-
-    screen.change(function() {
-      container.rec.size.set(screen);
-    });
+    resizeContainer();
+    screen.change(resizeContainer);
   });
 
   return container;

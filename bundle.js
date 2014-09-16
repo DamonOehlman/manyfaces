@@ -4598,7 +4598,11 @@ var quickconnect = require('rtc-quickconnect')('//switchboard.rtc.io', {
   manualJoin: true
 });
 
-var model = require('rtc-mesh')(quickconnect);
+var ExpiryModel = require('expiry-model');
+var model = require('rtc-mesh')(quickconnect, {
+  model: ExpiryModel({ maxAge: 2 })
+});
+
 var faces;
 var parts = [
   require('./parts/header')(eve),
@@ -4627,20 +4631,25 @@ quickconnect.on('channel:opened:snap', function(id, dc) {
 });
 
 model.on('change', function(key, value) {
-  console.log(key, value);
+  console.log('key: ' + key + ', value: ' + value);
 });
+
+setInterval(function() {
+  faces.appendChild(require('./parts/avatar')(eve));
+}, 1000);
 
 // scaffold out quickconnect
 quickconnect
   .createDataChannel('snap')
   .on('channel:opened:snap', function(id, dc) {
-    faces.appendChild(require('./parts/avatar')(eve));
     prepReceiver(id, dc);
-  });
+  })
+  .on('channel:closed:snap', function(id) {
+  })
 
 eve('app:ready');
 
-},{"./parts/avatar":128,"./parts/faces":129,"./parts/header":130,"concat-stream":25,"eve":37,"freeice":38,"hyperscript":42,"rtc-dcstream":59,"rtc-media":62,"rtc-mesh":70,"rtc-quickconnect":81}],25:[function(require,module,exports){
+},{"./parts/avatar":137,"./parts/faces":138,"./parts/header":139,"concat-stream":25,"eve":37,"expiry-model":38,"freeice":47,"hyperscript":51,"rtc-dcstream":68,"rtc-media":71,"rtc-mesh":79,"rtc-quickconnect":90}],25:[function(require,module,exports){
 (function (Buffer){
 var Writable = require('readable-stream').Writable
 var inherits = require('inherits')
@@ -7505,6 +7514,1168 @@ function packF32(v) { return packIEEE754(v, 8, 23); }
 })(this);
 
 },{}],38:[function(require,module,exports){
+var Scuttlebutt = require("scuttlebutt")
+var extend = require("xtend")
+var LRU = require("lru-cache")
+var filter = Scuttlebutt.filter
+
+var DAY = 1000 * 60 * 60 * 24
+var defaults = {
+    max: 500
+    , maxAge: DAY
+}
+
+module.exports = ExpiryModel
+
+function ExpiryModel(options) {
+    options = extend({}, defaults, options || {})
+
+    if (!options.dispose) {
+        options.dispose = dispose
+    }
+
+    var scuttle = Scuttlebutt()
+    var maxAge = options.maxAge
+    var store = LRU(options)
+
+    scuttle.set = set
+    scuttle.get = get
+    scuttle.applyUpdate = applyUpdate
+    scuttle.toJSON = toJSON
+    scuttle.history = history
+
+    return scuttle
+
+    function dispose(key, value) {
+        var source = value[2]
+        var found = false
+
+        store.forEach(function (record) {
+            if (record[2] === source && record[1] !== value[1]) {
+                found = true
+            }
+        })
+
+        if (!found) {
+            delete scuttle.sources[source]
+        }
+    }
+
+    function set(key, value) {
+        scuttle.localUpdate([key, value])
+    }
+
+    function get(key) {
+        var record = store.get(key)
+
+        return record ? record[0][1] : null
+    }
+
+    function getMergedRecord(update) {
+        var transaction = update[0]
+        var key = transaction[0]
+        var current = store.get(key)
+
+        if (!current) {
+            return update.slice()
+        }
+
+        var currentValue = current[0][1]
+        var currentTs = current[1]
+        var value = transaction[1]
+        var ts = update[1]
+
+        if (typeof currentValue === "object" &&
+            typeof value === "object" && value !== null
+        ) {
+            if (currentTs > ts) {
+                value = extend({}, value, currentValue)
+            } else {
+                value = extend({}, currentValue, value)
+            }
+        } else if (currentTs > ts) {
+            return false
+        }
+
+        return [[key, value], ts, update[2]]
+    }
+
+    function applyUpdate(update) {
+        var ts = update[1]
+        var key = update[0][0]
+
+        if (ts <= Date.now() - maxAge) {
+            return false
+        }
+
+        var record = getMergedRecord(update)
+
+        if (record === false) {
+            return false
+        } else if (record[0][1] === null) {
+            store.del(key)
+        } else {
+            store.set(key, record)
+        }
+
+        scuttle.emit("update", record[0][0], record[0][1]
+            , record[1], record[2])
+
+        return true
+    }
+
+    function toJSON() {
+        var hash = {}
+
+        store.forEach(function (record, key) {
+            hash[key] = record[0][1]
+        })
+
+        return hash
+    }
+
+    function history(sources) {
+        sources = sources || {}
+        var list = []
+        var now = Date.now()
+
+        store.forEach(function (record, key) {
+            var ts = record[1]
+
+            if (ts > now - maxAge) {
+                if (filter(record, sources)) {
+                    list.push(record)
+                }
+            } else {
+                store.del(key)
+            }
+        })
+
+        return list.sort(function (a, b) {
+            if (a[2] !== b[2]) {
+                return 0
+            }
+
+            return a[1] < b[1] ? -1 : 1
+        })
+    }
+}
+
+},{"lru-cache":39,"scuttlebutt":40,"xtend":46}],39:[function(require,module,exports){
+;(function () { // closure for web browsers
+
+if (typeof module === 'object' && module.exports) {
+  module.exports = LRUCache
+} else {
+  // just set the global for non-node platforms.
+  this.LRUCache = LRUCache
+}
+
+function hOP (obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key)
+}
+
+function naiveLength () { return 1 }
+
+function LRUCache (options) {
+  if (!(this instanceof LRUCache)) {
+    return new LRUCache(options)
+  }
+
+  var max
+  if (typeof options === 'number') {
+    max = options
+    options = { max: max }
+  }
+
+  if (!options) options = {}
+
+  max = options.max
+
+  var lengthCalculator = options.length || naiveLength
+
+  if (typeof lengthCalculator !== "function") {
+    lengthCalculator = naiveLength
+  }
+
+  if (!max || !(typeof max === "number") || max <= 0 ) {
+    // a little bit silly.  maybe this should throw?
+    max = Infinity
+  }
+
+  var allowStale = options.stale || false
+
+  var maxAge = options.maxAge || null
+
+  var dispose = options.dispose
+
+  var cache = Object.create(null) // hash of items by key
+    , lruList = Object.create(null) // list of items in order of use recency
+    , mru = 0 // most recently used
+    , lru = 0 // least recently used
+    , length = 0 // number of items in the list
+    , itemCount = 0
+
+
+  // resize the cache when the max changes.
+  Object.defineProperty(this, "max",
+    { set : function (mL) {
+        if (!mL || !(typeof mL === "number") || mL <= 0 ) mL = Infinity
+        max = mL
+        // if it gets above double max, trim right away.
+        // otherwise, do it whenever it's convenient.
+        if (length > max) trim()
+      }
+    , get : function () { return max }
+    , enumerable : true
+    })
+
+  // resize the cache when the lengthCalculator changes.
+  Object.defineProperty(this, "lengthCalculator",
+    { set : function (lC) {
+        if (typeof lC !== "function") {
+          lengthCalculator = naiveLength
+          length = itemCount
+          for (var key in cache) {
+            cache[key].length = 1
+          }
+        } else {
+          lengthCalculator = lC
+          length = 0
+          for (var key in cache) {
+            cache[key].length = lengthCalculator(cache[key].value)
+            length += cache[key].length
+          }
+        }
+
+        if (length > max) trim()
+      }
+    , get : function () { return lengthCalculator }
+    , enumerable : true
+    })
+
+  Object.defineProperty(this, "length",
+    { get : function () { return length }
+    , enumerable : true
+    })
+
+
+  Object.defineProperty(this, "itemCount",
+    { get : function () { return itemCount }
+    , enumerable : true
+    })
+
+  this.forEach = function (fn, thisp) {
+    thisp = thisp || this
+    var i = 0;
+    for (var k = mru - 1; k >= 0 && i < itemCount; k--) if (lruList[k]) {
+      i++
+      var hit = lruList[k]
+      fn.call(thisp, hit.value, hit.key, this)
+    }
+  }
+
+  this.keys = function () {
+    var keys = new Array(itemCount)
+    var i = 0
+    for (var k = mru - 1; k >= 0 && i < itemCount; k--) if (lruList[k]) {
+      var hit = lruList[k]
+      keys[i++] = hit.key
+    }
+    return keys
+  }
+
+  this.values = function () {
+    var values = new Array(itemCount)
+    var i = 0
+    for (var k = mru - 1; k >= 0 && i < itemCount; k--) if (lruList[k]) {
+      var hit = lruList[k]
+      values[i++] = hit.value
+    }
+    return values
+  }
+
+  this.reset = function () {
+    if (dispose) {
+      for (var k in cache) {
+        dispose(k, cache[k].value)
+      }
+    }
+    cache = {}
+    lruList = {}
+    lru = 0
+    mru = 0
+    length = 0
+    itemCount = 0
+  }
+
+  // Provided for debugging/dev purposes only. No promises whatsoever that
+  // this API stays stable.
+  this.dump = function () {
+    return cache
+  }
+
+  this.dumpLru = function () {
+    return lruList
+  }
+
+  this.set = function (key, value) {
+    if (hOP(cache, key)) {
+      // dispose of the old one before overwriting
+      if (dispose) dispose(key, cache[key].value)
+      if (maxAge) cache[key].now = Date.now()
+      cache[key].value = value
+      this.get(key)
+      return true
+    }
+
+    var len = lengthCalculator(value)
+    var age = maxAge ? Date.now() : 0
+    var hit = new Entry(key, value, mru++, len, age)
+
+    // oversized objects fall out of cache automatically.
+    if (hit.length > max) {
+      if (dispose) dispose(key, value)
+      return false
+    }
+
+    length += hit.length
+    lruList[hit.lu] = cache[key] = hit
+    itemCount ++
+
+    if (length > max) trim()
+    return true
+  }
+
+  this.has = function (key) {
+    if (!hOP(cache, key)) return false
+    var hit = cache[key]
+    if (maxAge && (Date.now() - hit.now > maxAge)) {
+      return false
+    }
+    return true
+  }
+
+  this.get = function (key) {
+    if (!hOP(cache, key)) return
+    var hit = cache[key]
+    if (maxAge && (Date.now() - hit.now > maxAge)) {
+      this.del(key)
+      return allowStale ? hit.value : undefined
+    }
+    shiftLU(hit)
+    hit.lu = mru ++
+    lruList[hit.lu] = hit
+    return hit.value
+  }
+
+  this.del = function (key) {
+    del(cache[key])
+  }
+
+  function trim () {
+    while (lru < mru && length > max)
+      del(lruList[lru])
+  }
+
+  function shiftLU(hit) {
+    delete lruList[ hit.lu ]
+    while (lru < mru && !lruList[lru]) lru ++
+  }
+
+  function del(hit) {
+    if (hit) {
+      if (dispose) dispose(hit.key, hit.value)
+      length -= hit.length
+      itemCount --
+      delete cache[ hit.key ]
+      shiftLU(hit)
+    }
+  }
+}
+
+// classy, since V8 prefers predictable objects.
+function Entry (key, value, mru, len, age) {
+  this.key = key
+  this.value = value
+  this.lu = mru
+  this.length = len
+  this.now = age
+}
+
+})()
+
+},{}],40:[function(require,module,exports){
+(function (process){
+var EventEmitter = require('events').EventEmitter
+var i = require('iterate')
+var duplex = require('duplex')
+var inherits = require('util').inherits
+var serializer = require('stream-serializer')
+var u = require('./util')
+var timestamp = require('monotonic-timestamp')
+
+exports = 
+module.exports = Scuttlebutt
+
+exports.createID = u.createID
+exports.updateIsRecent = u.filter
+exports.filter = u.filter
+exports.timestamp = timestamp
+
+function dutyOfSubclass() {
+  throw new Error('method must be implemented by subclass')
+}
+
+function validate (data) {
+  if(!(Array.isArray(data) 
+    && 'string' === typeof data[2]
+    && '__proto__'     !== data[2] //THIS WOULD BREAK STUFF
+    && 'number' === typeof data[1]
+  )) return false
+
+  return true
+}
+
+var emit = EventEmitter.prototype.emit
+
+inherits (Scuttlebutt, EventEmitter)
+
+function Scuttlebutt (opts) {
+
+  if(!(this instanceof Scuttlebutt)) return new Scuttlebutt(opts)
+  var id = 'string' === typeof opts ? opts : opts && opts.id
+  this.sources = {}
+  this.setMaxListeners(Number.MAX_VALUE)
+  //count how many other instances we are replicating to.
+  this._streams = 0
+  if(opts && opts.sign && opts.verify) {
+    this.setId(opts.id || opts.createId())
+    this._sign   = opts.sign
+    this._verify = opts.verify
+  } else {
+    this.setId(id || u.createId())
+  }
+}
+
+var sb = Scuttlebutt.prototype
+
+var emit = EventEmitter.prototype.emit
+
+sb.applyUpdate = dutyOfSubclass
+sb.history      = dutyOfSubclass
+
+sb.localUpdate = function (trx) {
+  this._update([trx, timestamp(), this.id])
+  return this
+}
+
+sb._update = function (update) {
+  //validated when it comes into the stream
+  var ts = update[1]
+  var source = update[2]
+  //if this message is old for it's source,
+  //ignore it. it's out of order.
+  //each node must emit it's changes in order!
+  
+  var latest = this.sources[source]
+  if(latest && latest >= ts)
+    return emit.call(this, 'old_data', update), false
+
+  this.sources[source] = ts
+
+  var self = this
+  function didVerification (err, verified) {
+
+    // I'm not sure how what should happen if a async verification
+    // errors. if it's an key not found - that is a verification fail,
+    // not a error. if it's genunie error, really you should queue and 
+    // try again? or replay the message later
+    // -- this should be done my the security plugin though, not scuttlebutt.
+
+    if(err)
+      return emit.call(self, 'error', err)
+
+    if(!verified)
+      return emit.call(self, 'unverified_data', update)
+
+    // check if this message is older than
+    // the value we already have.
+    // do nothing if so
+    // emit an 'old_data' event because i'll want to track how many
+    // unnecessary messages are sent.
+
+    if(self.applyUpdate(update))
+      emit.call(self, '_update', update) //write to stream.
+  }
+
+  if(source !== this.id) {
+    if(this._verify)
+      this._verify(update, didVerification)
+    else
+      didVerification(null, true)
+  } else {
+    if(this._sign) {
+      //could make this async easily enough.
+      update[3] = this._sign(update)
+    }
+    didVerification(null, true)
+  }
+
+  return true
+}
+
+sb.createStream = function (opts) {
+  var self = this
+  //the sources for the remote end.
+  var sources = {}, other
+  var syncSent = false, syncRecv = false
+
+  this._streams ++
+
+  opts = opts || {}
+  var d = duplex()
+  d.name = opts.name
+  var outer = serializer(opts && opts.wrapper)(d)
+  outer.inner = d
+
+  d.writable = opts.writable !== false
+  d.readable = opts.readable !== false
+
+  syncRecv   = !d.writable
+  syncSent   = !d.readable
+
+  var tail = opts.tail !== false //default to tail=true
+
+  function start (data) {
+    //when the digest is recieved from the other end,
+    //send the history.
+    //merge with the current list of sources.
+    sources = data.clock
+    i.each(self.history(sources), function (data) {d._data(data)})
+    
+    outer.emit('header', data)
+    d._data('SYNC')
+    //when we have sent all history
+    outer.emit('syncSent')
+    syncSent = true
+    //when we have recieved all histoyr
+    //emit 'synced' when this stream has synced.
+    if(syncRecv) outer.emit('sync'), outer.emit('synced')
+    if(!tail) d._end()
+  }
+
+  d
+    .on('_data', function (data) {
+      //if it's an array, it's an update.
+      if(Array.isArray(data)) {
+        if(validate(data))
+          return self._update(data)
+      }
+      //if it's an object, it's a scuttlebut digest.
+      else if('object' === typeof data && data)
+        start(data)
+      else if('string' === typeof data && data == 'SYNC') {
+        syncRecv = true
+        outer.emit('syncRecieved')
+        if(syncSent) outer.emit('sync'), outer.emit('synced')
+      }
+    }).on('_end', function () {
+      d._end()
+    })
+    .on('close', function () {
+      self.removeListener('_update', onUpdate)
+      //emit the number of streams that are remaining...
+      //this will be used for memory management...
+      self._streams --
+      emit.call(self, 'unstream', self._streams)
+    })
+
+  if(opts && opts.tail === false) {
+    outer.on('sync', function () {
+      process.nextTick(function () {
+        d._end()
+      })
+    })
+  }
+  function onUpdate (update) { //value, source, ts
+    if(!validate(update) || !u.filter(update, sources))
+      return
+
+    d._data(update)
+
+    //really, this should happen before emitting.
+    var ts = update[1]
+    var source = update[2]
+    sources[source] = ts
+  }
+
+  var outgoing = { id : self.id, clock : self.sources }
+
+  if (opts && opts.meta) outgoing.meta = opts.meta
+
+  if(d.readable) {
+    d._data(outgoing)
+    if(!d.writable)
+      start({clock:{}})
+    if(tail)
+      self.on('_update', onUpdate)
+  }
+
+  self.once('dispose', function () {
+    d.end()
+  })
+
+  return outer
+}
+
+sb.createWriteStream = function (opts) {
+  opts = opts || {}
+  opts.writable = true; opts.readable = false
+  return this.createStream(opts)
+}
+
+sb.createReadStream = function (opts) {
+  opts = opts || {}
+  opts.writable = false; opts.readable = true
+  return this.createStream(opts)
+}
+
+sb.dispose = function () {
+  emit.call(this, 'dispose')
+}
+
+sb.setId = function (id) {
+  if('__proto__' === id) throw new Error('__proto__ is invalid id')
+  if(id == null) throw new Error('null is not invalid id')
+  this.id = id
+  return this
+}
+
+function streamDone(stream, listener) {
+
+  function remove () {
+    stream.removeListener('end',   onDone)
+    stream.removeListener('error', onDone)
+    stream.removeListener('close',   onDone)
+  }
+  function onDone (arg) {
+    remove()
+    listener.call(this, arg)
+  }
+
+  //this makes emitter.removeListener(event, listener) still work
+  onDone.listener = listener
+
+  stream.on('end',   onDone)
+  stream.on('error', onDone)
+  stream.on('close', onDone)
+}
+
+//create another instance of this scuttlebutt,
+//that is in sync and attached to this instance.
+sb.clone = function () {
+  var A = this
+  var B = new (A.constructor)
+  B.setId(A.id) //same id. think this will work...
+
+  A._clones = (A._clones || 0) + 1
+
+  var a = A.createStream({wrapper: 'raw'})
+  var b = B.createStream({wrapper: 'raw'})
+
+  //all updates must be sync, so make sure pause never happens.
+  a.pause = b.pause = function noop(){}
+
+  streamDone(b, function () {
+    A._clones--
+    emit.call(A, 'unclone', A._clones)
+  })
+
+  a.pipe(b).pipe(a)
+  //resume both streams, so that the new instance is brought up to date immediately.
+  a.resume()
+  b.resume()
+
+  return B
+}
+
+
+}).call(this,require('_process'))
+},{"./util":45,"_process":8,"duplex":41,"events":5,"iterate":42,"monotonic-timestamp":43,"stream-serializer":44,"util":23}],41:[function(require,module,exports){
+(function (process){
+var Stream = require('stream')
+
+module.exports = function (write, end) {
+  var stream = new Stream() 
+  var buffer = [], ended = false, destroyed = false, emitEnd
+  stream.writable = stream.readable = true
+  stream.paused = false
+  stream._paused = false
+  stream.buffer = buffer
+  
+  stream
+    .on('pause', function () {
+      stream._paused = true
+    })
+    .on('drain', function () {
+      stream._paused = false
+    })
+   
+  function destroySoon () {
+    process.nextTick(stream.destroy.bind(stream))
+  }
+
+  if(write)
+    stream.on('_data', write)
+  if(end)
+    stream.on('_end', end)
+
+  //destroy the stream once both ends are over
+  //but do it in nextTick, so that other listeners
+  //on end have time to respond
+  stream.once('end', function () { 
+    stream.readable = false
+    if(!stream.writable) {
+      process.nextTick(function () {
+        stream.destroy()
+      })
+    }
+  })
+
+  stream.once('_end', function () { 
+    stream.writable = false
+    if(!stream.readable)
+      stream.destroy()
+  })
+
+  // this is the default write method,
+  // if you overide it, you are resposible
+  // for pause state.
+
+  
+  stream._data = function (data) {
+    if(!stream.paused && !buffer.length)
+      stream.emit('data', data)
+    else 
+      buffer.push(data)
+    return !(stream.paused || buffer.length)
+  }
+
+  stream._end = function (data) { 
+    if(data) stream._data(data)
+    if(emitEnd) return
+    emitEnd = true
+    //destroy is handled above.
+    stream.drain()
+  }
+
+  stream.write = function (data) {
+    stream.emit('_data', data)
+    return !stream._paused
+  }
+
+  stream.end = function () {
+    stream.writable = false
+    if(stream.ended) return
+    stream.ended = true
+    stream.emit('_end')
+  }
+
+  stream.drain = function () {
+    if(!buffer.length && !emitEnd) return
+    //if the stream is paused after just before emitEnd()
+    //end should be buffered.
+    while(!stream.paused) {
+      if(buffer.length) {
+        stream.emit('data', buffer.shift())
+        if(buffer.length == 0) {
+          stream.emit('_drain')
+        }
+      }
+      else if(emitEnd && stream.readable) {
+        stream.readable = false
+        stream.emit('end')
+        return
+      } else {
+        //if the buffer has emptied. emit drain.
+        return true
+      }
+    }
+  }
+  var started = false
+  stream.resume = function () {
+    //this is where I need pauseRead, and pauseWrite.
+    //here the reading side is unpaused,
+    //but the writing side may still be paused.
+    //the whole buffer might not empity at once.
+    //it might pause again.
+    //the stream should never emit data inbetween pause()...resume()
+    //and write should return !buffer.length
+    started = true
+    stream.paused = false
+    stream.drain() //will emit drain if buffer empties.
+    return stream
+  }
+
+  stream.destroy = function () {
+    if(destroyed) return
+    destroyed = ended = true     
+    buffer.length = 0
+    stream.emit('close')
+  }
+  var pauseCalled = false
+  stream.pause = function () {
+    started = true
+    stream.paused = true
+    stream.emit('_pause')
+    return stream
+  }
+  stream._pause = function () {
+    if(!stream._paused) {
+      stream._paused = true
+      stream.emit('pause')
+    }
+    return this
+  }
+  stream.paused = true
+  process.nextTick(function () {
+    //unless the user manually paused
+    if(started) return
+    stream.resume()
+  })
+ 
+  return stream
+}
+
+
+}).call(this,require('_process'))
+},{"_process":8,"stream":21}],42:[function(require,module,exports){
+
+//
+// adds all the fields from obj2 onto obj1
+//
+
+var each = exports.each = function (obj,iterator){
+ var keys = Object.keys(obj)
+ keys.forEach(function (key){
+  iterator(obj[key],key,obj) 
+ })
+}
+
+var RX = /sadf/.constructor
+function rx (iterator ){
+  return iterator instanceof RX ? function (str) { 
+      var m = iterator.exec(str)
+      return m && (m[1] ? m[1] : m[0]) 
+    } : iterator
+}
+
+var times = exports.times = function () {
+  var args = [].slice.call(arguments)
+    , iterator = rx(args.pop())
+    , m = args.pop()
+    , i = args.shift()
+    , j = args.shift()
+    , diff, dir
+    , a = []
+    
+    i = 'number' === typeof i ? i : 1
+    diff = j ? j - i : 1
+    dir = i < m
+    if(m == i)
+      throw new Error('steps cannot be the same: '+m+', '+i)
+  for (; dir ? i <= m : m <= i; i += diff)
+    a.push(iterator(i))
+  return a
+}
+
+var map = exports.map = function (obj, iterator){
+  iterator = rx(iterator)
+  if(Array.isArray(obj))
+    return obj.map(iterator)
+  if('number' === typeof obj)
+    return times.apply(null, [].slice.call(arguments))  
+  //return if null ?  
+  var keys = Object.keys(obj)
+    , r = {}
+  keys.forEach(function (key){
+    r[key] = iterator(obj[key],key,obj) 
+  })
+  return r
+}
+
+var findReturn = exports.findReturn = function (obj, iterator) {
+  iterator = rx(iterator)
+  if(obj == null)
+    return
+  var keys = Object.keys(obj)
+    , l = keys.length
+  for (var i = 0; i < l; i ++) {
+    var key = keys[i]
+      , value = obj[key]
+    var r = iterator(value, key)
+    if(r) return r
+  }
+}
+
+var find = exports.find = function (obj, iterator) { 
+  iterator = rx(iterator)
+  return findReturn (obj, function (v, k) {
+    var r = iterator(v, k)
+    if(r) return v
+  })
+}
+
+var findKey = exports.findKey = function (obj, iterator) { 
+  iterator = rx(iterator)
+  return findReturn (obj, function (v, k) {
+    var r = iterator(v, k)
+    if(r) return k
+  })
+}
+
+var filter = exports.filter = function (obj, iterator){
+  iterator = rx (iterator)
+
+  if(Array.isArray(obj))
+    return obj.filter(iterator)
+  
+  var keys = Object.keys(obj)
+    , r = {}
+  keys.forEach(function (key){
+    var v
+    if(iterator(v = obj[key],key,obj))
+      r[key] = v
+  })
+  return r 
+}
+
+var mapKeys = exports.mapKeys = function (ary, iterator){
+  var r = {}
+  iterator = rx(iterator)
+  each(ary, function (v,k){
+    r[v] = iterator(v,k)
+  })
+  return r
+}
+
+
+var mapToArray = exports.mapToArray = function (ary, iterator){
+  var r = []
+  iterator = rx(iterator)
+  each(ary, function (v,k){
+    r.push(iterator(v,k))
+  })
+  return r
+}
+
+var path = exports.path = function (object, path) {
+
+  for (var i in path) {
+    if(object == null) return undefined
+    var key = path[i]
+    object = object[key]
+  }
+  return object
+}
+
+/*
+NOTE: naive implementation. 
+`match` must not contain circular references.
+*/
+
+var setPath = exports.setPath = function (object, path, value) {
+
+  for (var i in path) {
+    var key = path[i]
+    if(object[key] == null) object[key] = ( 
+      i + 1 == path.length ? value : {}
+    )
+    object = object[key]
+  }
+}
+
+var join = exports.join = function (A, B, it) {
+  each(A, function (a, ak) {
+    each(B, function (b, bk) {
+      it(a, b, ak, bk)
+    })
+  })
+}
+
+},{}],43:[function(require,module,exports){
+// If `Date.now()` is invoked twice quickly, it's possible to get two
+// identical time stamps. To avoid generation duplications, subsequent
+// calls are manually ordered to force uniqueness.
+
+var _last = 0
+var _count = 1
+var adjusted = 0
+var _adjusted = 0
+
+module.exports =
+function timestamp() {
+  /**
+  Returns NOT an accurate representation of the current time.
+  Since js only measures time as ms, if you call `Date.now()`
+  twice quickly, it's possible to get two identical time stamps.
+  This function guarantees unique but maybe inaccurate results
+  on each call.
+  **/
+  //uncomment this wen
+  var time = Date.now()
+  //time = ~~ (time / 1000) 
+  //^^^uncomment when testing...
+
+  /**
+  If time returned is same as in last call, adjust it by
+  adding a number based on the counter. 
+  Counter is incremented so that next call get's adjusted properly.
+  Because floats have restricted precision, 
+  may need to step past some values...
+  **/
+  if (_last === time)  {
+    do {
+      adjusted = time + ((_count++) / (_count + 999))
+    } while (adjusted === _adjusted)
+    _adjusted = adjusted
+  }
+  // If last time was different reset timer back to `1`.
+  else {
+    _count = 1
+    adjusted = time
+  }
+  _adjusted = adjusted
+  _last = time
+  return adjusted
+}
+
+},{}],44:[function(require,module,exports){
+
+var EventEmitter = require('events').EventEmitter
+
+exports = module.exports = function (wrapper) {
+
+  if('function' == typeof wrapper)
+    return wrapper
+  
+  return exports[wrapper] || exports.json
+}
+
+exports.json = function (stream) {
+
+  var write = stream.write
+  var soFar = ''
+
+  function parse (line) {
+    var js
+    try {
+      js = JSON.parse(line)
+      //ignore lines of whitespace...
+    } catch (err) { 
+      return stream.emit('error', err)
+      //return console.error('invalid JSON', line)
+    }
+    if(js !== undefined)
+      write.call(stream, js)
+  }
+
+  function onData (data) {
+    var lines = (soFar + data).split('\n')
+    soFar = lines.pop()
+    while(lines.length) {
+      parse(lines.shift())
+    }
+  }
+
+  stream.write = onData
+  
+  var end = stream.end
+
+  stream.end = function (data) {
+    if(data)
+      stream.write(data)
+    //if there is any left over...
+    if(soFar) {
+      parse(soFar)
+    }
+    return end.call(stream)
+  }
+
+  stream.emit = function (event, data) {
+
+    if(event == 'data') {
+      data = JSON.stringify(data) + '\n'
+    }
+    //since all stream events only use one argument, this is okay...
+    EventEmitter.prototype.emit.call(stream, event, data)
+  }
+
+  return stream
+//  return es.pipeline(es.split(), es.parse(), stream, es.stringify())
+}
+
+exports.raw = function (stream) {
+  return stream
+}
+
+
+},{"events":5}],45:[function(require,module,exports){
+exports.createId = 
+function () {
+  return [1,1,1].map(function () {
+    return Math.random().toString(16).substring(2).toUpperCase()
+  }).join('')
+}
+
+exports.filter = function (update, sources) {
+  var ts = update[1]
+  var source = update[2]
+  return (!sources || !sources[source] || sources[source] < ts)
+}
+
+exports.protoIsIllegal = function (s) {
+  s.emit('invalid', new Error('"__proto__" is illegal property name'))
+  return null
+}
+
+function invalidUpdate(t) {
+  t.emit('invalid', new Error('invalid update'))
+}
+
+exports.validUpdate = function (t, update) {
+  if(!Array.isArray(update)) return invalidUpdate(t)
+  if('string' !== typeof update[1] || 'number' !== typeof update[2])
+    return invalidUpdate(t)
+}
+
+exports.sort = function (hist) {
+  return hist.sort(function (a, b) {
+    //sort by timestamps, then ids.
+    //there should never be a pair with equal timestamps
+    //and ids.
+    return a[1] - b[1] || (a[2] > b[2] ? 1 : -1)
+  })
+}
+
+},{}],46:[function(require,module,exports){
+module.exports = extend
+
+function extend(target) {
+    for (var i = 1; i < arguments.length; i++) {
+        var source = arguments[i],
+            keys = Object.keys(source)
+
+        for (var j = 0; j < keys.length; j++) {
+            var name = keys[j]
+            target[name] = source[name]
+        }
+    }
+
+    return target
+}
+},{}],47:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -7604,7 +8775,7 @@ var freeice = module.exports = function(opts) {
   return selected;
 };
 
-},{"./stun.json":40,"./turn.json":41,"normalice":39}],39:[function(require,module,exports){
+},{"./stun.json":49,"./turn.json":50,"normalice":48}],48:[function(require,module,exports){
 /**
   # normalice
 
@@ -7666,7 +8837,7 @@ module.exports = function(input) {
   return output;
 };
 
-},{}],40:[function(require,module,exports){
+},{}],49:[function(require,module,exports){
 module.exports=[
   "stun.l.google.com:19302",
   "stun1.l.google.com:19302",
@@ -7686,10 +8857,10 @@ module.exports=[
   "stun.voxgratia.org"
 ]
 
-},{}],41:[function(require,module,exports){
+},{}],50:[function(require,module,exports){
 module.exports=[]
 
-},{}],42:[function(require,module,exports){
+},{}],51:[function(require,module,exports){
 var split = require('browser-split')
 var ClassList = require('class-list')
 var DataSet = require('data-set')
@@ -7834,7 +9005,7 @@ function isArray (arr) {
   return Object.prototype.toString.call(arr) == '[object Array]'
 }
 
-},{"browser-split":43,"class-list":44,"data-set":46,"html-element":1}],43:[function(require,module,exports){
+},{"browser-split":52,"class-list":53,"data-set":55,"html-element":1}],52:[function(require,module,exports){
 /*!
  * Cross-Browser Split 1.1.1
  * Copyright 2007-2012 Steven Levithan <stevenlevithan.com>
@@ -7942,7 +9113,7 @@ module.exports = (function split(undef) {
   return self;
 })();
 
-},{}],44:[function(require,module,exports){
+},{}],53:[function(require,module,exports){
 // contains, add, remove, toggle
 var indexof = require('indexof')
 
@@ -8043,7 +9214,7 @@ function isTruthy(value) {
     return !!value
 }
 
-},{"indexof":45}],45:[function(require,module,exports){
+},{"indexof":54}],54:[function(require,module,exports){
 
 var indexOf = [].indexOf;
 
@@ -8054,7 +9225,7 @@ module.exports = function(arr, obj){
   }
   return -1;
 };
-},{}],46:[function(require,module,exports){
+},{}],55:[function(require,module,exports){
 var Weakmap = require("weakmap")
 var Individual = require("individual")
 
@@ -8098,7 +9269,7 @@ function createHash(elem) {
     return hash
 }
 
-},{"individual":47,"weakmap":49}],47:[function(require,module,exports){
+},{"individual":56,"weakmap":58}],56:[function(require,module,exports){
 var root = require("global")
 
 module.exports = Individual
@@ -8116,7 +9287,7 @@ function Individual(key, value) {
     return value
 }
 
-},{"global":48}],48:[function(require,module,exports){
+},{"global":57}],57:[function(require,module,exports){
 (function (global){
 /*global window, global*/
 if (typeof global !== "undefined") {
@@ -8126,7 +9297,7 @@ if (typeof global !== "undefined") {
 }
 
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],49:[function(require,module,exports){
+},{}],58:[function(require,module,exports){
 /* (The MIT License)
  *
  * Copyright (c) 2012 Brandon Benvie <http://bbenvie.com>
@@ -8368,7 +9539,7 @@ void function(global, undefined_, undefined){
     global.WeakMap.createStorage = createStorage;
 }((0, eval)('this'));
 
-},{}],50:[function(require,module,exports){
+},{}],59:[function(require,module,exports){
 ;(function () {
 
 // bind a to b -- One Way Binding
@@ -8607,7 +9778,7 @@ if('object' === typeof module) module.exports = exports
 else                           this.observable = exports
 })()
 
-},{}],51:[function(require,module,exports){
+},{}],60:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -8657,7 +9828,7 @@ module.exports = pull.Source(function(observable) {
     next = [cb];
   };
 });
-},{"pull-core":52}],52:[function(require,module,exports){
+},{"pull-core":61}],61:[function(require,module,exports){
 exports.id = 
 function (item) {
   return item
@@ -8774,7 +9945,7 @@ function (createSink, cb) {
 }
 
 
-},{}],53:[function(require,module,exports){
+},{}],62:[function(require,module,exports){
 var sources  = require('./sources')
 var sinks    = require('./sinks')
 var throughs = require('./throughs')
@@ -8850,7 +10021,7 @@ exports.Sink    = exports.pipeableSink   = u.Sink
 
 
 
-},{"./maybe":54,"./sinks":56,"./sources":57,"./throughs":58,"pull-core":55}],54:[function(require,module,exports){
+},{"./maybe":63,"./sinks":65,"./sources":66,"./throughs":67,"pull-core":64}],63:[function(require,module,exports){
 var u = require('pull-core')
 var prop = u.prop
 var id   = u.id
@@ -8915,9 +10086,9 @@ module.exports = function (pull) {
   return exports
 }
 
-},{"pull-core":55}],55:[function(require,module,exports){
-module.exports=require(52)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/pull-observable/node_modules/pull-core/index.js":52}],56:[function(require,module,exports){
+},{"pull-core":64}],64:[function(require,module,exports){
+module.exports=require(61)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/pull-observable/node_modules/pull-core/index.js":61}],65:[function(require,module,exports){
 var drain = exports.drain = function (read, op, done) {
 
   ;(function next() {
@@ -8959,7 +10130,7 @@ var log = exports.log = function (read, done) {
 }
 
 
-},{}],57:[function(require,module,exports){
+},{}],66:[function(require,module,exports){
 
 var keys = exports.keys =
 function (object) {
@@ -9111,7 +10282,7 @@ function (start, createStream) {
 }
 
 
-},{}],58:[function(require,module,exports){
+},{}],67:[function(require,module,exports){
 (function (process){
 var u      = require('pull-core')
 var sources = require('./sources')
@@ -9443,7 +10614,7 @@ function (read, mapper) {
 
 
 }).call(this,require('_process'))
-},{"./sinks":56,"./sources":57,"_process":8,"pull-core":55}],59:[function(require,module,exports){
+},{"./sinks":65,"./sources":66,"_process":8,"pull-core":64}],68:[function(require,module,exports){
 (function (Buffer){
 /* jshint node: true */
 'use strict';
@@ -9657,7 +10828,7 @@ function handleChannelOpen(evt) {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":2,"cog/logger":60,"stream":21,"typedarray-to-buffer":61,"util":23}],60:[function(require,module,exports){
+},{"buffer":2,"cog/logger":69,"stream":21,"typedarray-to-buffer":70,"util":23}],69:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -9792,7 +10963,7 @@ logger.enable = function() {
 
   return logger;
 };
-},{}],61:[function(require,module,exports){
+},{}],70:[function(require,module,exports){
 (function (Buffer){
 /**
  * Convert a typed array to a Buffer without a copy
@@ -9815,7 +10986,7 @@ module.exports = function (arr) {
 }
 
 }).call(this,require("buffer").Buffer)
-},{"buffer":2}],62:[function(require,module,exports){
+},{"buffer":2}],71:[function(require,module,exports){
 /* jshint node: true */
 /* global navigator: false */
 /* global window: false */
@@ -10419,7 +11590,7 @@ Media.prototype._handleSuccess = function(stream) {
 
 **/
 
-},{"cog/extend":63,"cog/logger":64,"eventemitter3":65,"inherits":66,"rtc-core/detect":67,"rtc-core/plugin":69}],63:[function(require,module,exports){
+},{"cog/extend":72,"cog/logger":73,"eventemitter3":74,"inherits":75,"rtc-core/detect":76,"rtc-core/plugin":78}],72:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -10454,9 +11625,9 @@ module.exports = function(target) {
 
   return target;
 };
-},{}],64:[function(require,module,exports){
-module.exports=require(60)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/cog/logger.js":60}],65:[function(require,module,exports){
+},{}],73:[function(require,module,exports){
+module.exports=require(69)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/cog/logger.js":69}],74:[function(require,module,exports){
 'use strict';
 
 /**
@@ -10662,9 +11833,9 @@ if ('object' === typeof module && module.exports) {
   module.exports = EventEmitter;
 }
 
-},{}],66:[function(require,module,exports){
+},{}],75:[function(require,module,exports){
 module.exports=require(6)
-},{"/home/doehlman/.bashinate/install/node/0.10.31/lib/node_modules/browserify/node_modules/inherits/inherits_browser.js":6}],67:[function(require,module,exports){
+},{"/home/doehlman/.bashinate/install/node/0.10.31/lib/node_modules/browserify/node_modules/inherits/inherits_browser.js":6}],76:[function(require,module,exports){
 /* jshint node: true */
 /* global window: false */
 /* global navigator: false */
@@ -10737,7 +11908,7 @@ detect.moz = typeof navigator != 'undefined' && !!navigator.mozGetUserMedia;
 detect.browser = browser.name;
 detect.browserVersion = detect.version = browser.version;
 
-},{"detect-browser":68}],68:[function(require,module,exports){
+},{"detect-browser":77}],77:[function(require,module,exports){
 var browsers = [
   [ 'chrome', /Chrom(?:e|ium)\/([0-9\.]+)(:?\s|$)/ ],
   [ 'firefox', /Firefox\/([0-9\.]+)(?:\s|$)/ ],
@@ -10770,7 +11941,7 @@ function isMatch(pair) {
   return !!pair[2];
 }
 
-},{}],69:[function(require,module,exports){
+},{}],78:[function(require,module,exports){
 var detect = require('./detect');
 var requiredFunctions = [
   'init'
@@ -10792,7 +11963,7 @@ module.exports = function(plugins) {
   return [].concat(plugins || []).filter(isSupported).filter(isValid)[0];
 }
 
-},{"./detect":67}],70:[function(require,module,exports){
+},{"./detect":76}],79:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -10932,13 +12103,13 @@ module.exports = function(qc, opts) {
   return model;
 };
 
-},{"cog/logger":71,"rtc-dcstream":72,"scuttlebutt/model":75}],71:[function(require,module,exports){
-module.exports=require(60)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/cog/logger.js":60}],72:[function(require,module,exports){
-module.exports=require(59)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/index.js":59,"buffer":2,"cog/logger":71,"stream":21,"typedarray-to-buffer":73,"util":23}],73:[function(require,module,exports){
-module.exports=require(61)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/typedarray-to-buffer/index.js":61,"buffer":2}],74:[function(require,module,exports){
+},{"cog/logger":80,"rtc-dcstream":81,"scuttlebutt/model":84}],80:[function(require,module,exports){
+module.exports=require(69)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/cog/logger.js":69}],81:[function(require,module,exports){
+module.exports=require(68)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/index.js":68,"buffer":2,"cog/logger":80,"stream":21,"typedarray-to-buffer":82,"util":23}],82:[function(require,module,exports){
+module.exports=require(70)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/typedarray-to-buffer/index.js":70,"buffer":2}],83:[function(require,module,exports){
 (function (process){
 var EventEmitter = require('events').EventEmitter
 var i = require('iterate')
@@ -11256,7 +12427,7 @@ sb.clone = function () {
 
 
 }).call(this,require('_process'))
-},{"./util":80,"_process":8,"duplex":76,"events":5,"iterate":77,"monotonic-timestamp":78,"stream-serializer":79,"util":23}],75:[function(require,module,exports){
+},{"./util":89,"_process":8,"duplex":85,"events":5,"iterate":86,"monotonic-timestamp":87,"stream-serializer":88,"util":23}],84:[function(require,module,exports){
 var Scuttlebutt = require('./index')
 var inherits = require('util').inherits
 var each = require('iterate').each
@@ -11344,356 +12515,13 @@ m.toJSON = function () {
   return o
 }
 
-},{"./index":74,"./util":80,"iterate":77,"util":23}],76:[function(require,module,exports){
-(function (process){
-var Stream = require('stream')
-
-module.exports = function (write, end) {
-  var stream = new Stream() 
-  var buffer = [], ended = false, destroyed = false, emitEnd
-  stream.writable = stream.readable = true
-  stream.paused = false
-  stream._paused = false
-  stream.buffer = buffer
-  
-  stream
-    .on('pause', function () {
-      stream._paused = true
-    })
-    .on('drain', function () {
-      stream._paused = false
-    })
-   
-  function destroySoon () {
-    process.nextTick(stream.destroy.bind(stream))
-  }
-
-  if(write)
-    stream.on('_data', write)
-  if(end)
-    stream.on('_end', end)
-
-  //destroy the stream once both ends are over
-  //but do it in nextTick, so that other listeners
-  //on end have time to respond
-  stream.once('end', function () { 
-    stream.readable = false
-    if(!stream.writable) {
-      process.nextTick(function () {
-        stream.destroy()
-      })
-    }
-  })
-
-  stream.once('_end', function () { 
-    stream.writable = false
-    if(!stream.readable)
-      stream.destroy()
-  })
-
-  // this is the default write method,
-  // if you overide it, you are resposible
-  // for pause state.
-
-  
-  stream._data = function (data) {
-    if(!stream.paused && !buffer.length)
-      stream.emit('data', data)
-    else 
-      buffer.push(data)
-    return !(stream.paused || buffer.length)
-  }
-
-  stream._end = function (data) { 
-    if(data) stream._data(data)
-    if(emitEnd) return
-    emitEnd = true
-    //destroy is handled above.
-    stream.drain()
-  }
-
-  stream.write = function (data) {
-    stream.emit('_data', data)
-    return !stream._paused
-  }
-
-  stream.end = function () {
-    stream.writable = false
-    if(stream.ended) return
-    stream.ended = true
-    stream.emit('_end')
-  }
-
-  stream.drain = function () {
-    if(!buffer.length && !emitEnd) return
-    //if the stream is paused after just before emitEnd()
-    //end should be buffered.
-    while(!stream.paused) {
-      if(buffer.length) {
-        stream.emit('data', buffer.shift())
-        if(buffer.length == 0) {
-          stream.emit('_drain')
-        }
-      }
-      else if(emitEnd && stream.readable) {
-        stream.readable = false
-        stream.emit('end')
-        return
-      } else {
-        //if the buffer has emptied. emit drain.
-        return true
-      }
-    }
-  }
-  var started = false
-  stream.resume = function () {
-    //this is where I need pauseRead, and pauseWrite.
-    //here the reading side is unpaused,
-    //but the writing side may still be paused.
-    //the whole buffer might not empity at once.
-    //it might pause again.
-    //the stream should never emit data inbetween pause()...resume()
-    //and write should return !buffer.length
-    started = true
-    stream.paused = false
-    stream.drain() //will emit drain if buffer empties.
-    return stream
-  }
-
-  stream.destroy = function () {
-    if(destroyed) return
-    destroyed = ended = true     
-    buffer.length = 0
-    stream.emit('close')
-  }
-  var pauseCalled = false
-  stream.pause = function () {
-    started = true
-    stream.paused = true
-    stream.emit('_pause')
-    return stream
-  }
-  stream._pause = function () {
-    if(!stream._paused) {
-      stream._paused = true
-      stream.emit('pause')
-    }
-    return this
-  }
-  stream.paused = true
-  process.nextTick(function () {
-    //unless the user manually paused
-    if(started) return
-    stream.resume()
-  })
- 
-  return stream
-}
-
-
-}).call(this,require('_process'))
-},{"_process":8,"stream":21}],77:[function(require,module,exports){
-
-//
-// adds all the fields from obj2 onto obj1
-//
-
-var each = exports.each = function (obj,iterator){
- var keys = Object.keys(obj)
- keys.forEach(function (key){
-  iterator(obj[key],key,obj) 
- })
-}
-
-var RX = /sadf/.constructor
-function rx (iterator ){
-  return iterator instanceof RX ? function (str) { 
-      var m = iterator.exec(str)
-      return m && (m[1] ? m[1] : m[0]) 
-    } : iterator
-}
-
-var times = exports.times = function () {
-  var args = [].slice.call(arguments)
-    , iterator = rx(args.pop())
-    , m = args.pop()
-    , i = args.shift()
-    , j = args.shift()
-    , diff, dir
-    , a = []
-    
-    i = 'number' === typeof i ? i : 1
-    diff = j ? j - i : 1
-    dir = i < m
-    if(m == i)
-      throw new Error('steps cannot be the same: '+m+', '+i)
-  for (; dir ? i <= m : m <= i; i += diff)
-    a.push(iterator(i))
-  return a
-}
-
-var map = exports.map = function (obj, iterator){
-  iterator = rx(iterator)
-  if(Array.isArray(obj))
-    return obj.map(iterator)
-  if('number' === typeof obj)
-    return times.apply(null, [].slice.call(arguments))  
-  //return if null ?  
-  var keys = Object.keys(obj)
-    , r = {}
-  keys.forEach(function (key){
-    r[key] = iterator(obj[key],key,obj) 
-  })
-  return r
-}
-
-var findReturn = exports.findReturn = function (obj, iterator) {
-  iterator = rx(iterator)
-  if(obj == null)
-    return
-  var keys = Object.keys(obj)
-    , l = keys.length
-  for (var i = 0; i < l; i ++) {
-    var key = keys[i]
-      , value = obj[key]
-    var r = iterator(value, key)
-    if(r) return r
-  }
-}
-
-var find = exports.find = function (obj, iterator) { 
-  iterator = rx(iterator)
-  return findReturn (obj, function (v, k) {
-    var r = iterator(v, k)
-    if(r) return v
-  })
-}
-
-var findKey = exports.findKey = function (obj, iterator) { 
-  iterator = rx(iterator)
-  return findReturn (obj, function (v, k) {
-    var r = iterator(v, k)
-    if(r) return k
-  })
-}
-
-var filter = exports.filter = function (obj, iterator){
-  iterator = rx (iterator)
-
-  if(Array.isArray(obj))
-    return obj.filter(iterator)
-  
-  var keys = Object.keys(obj)
-    , r = {}
-  keys.forEach(function (key){
-    var v
-    if(iterator(v = obj[key],key,obj))
-      r[key] = v
-  })
-  return r 
-}
-
-var mapKeys = exports.mapKeys = function (ary, iterator){
-  var r = {}
-  iterator = rx(iterator)
-  each(ary, function (v,k){
-    r[v] = iterator(v,k)
-  })
-  return r
-}
-
-
-var mapToArray = exports.mapToArray = function (ary, iterator){
-  var r = []
-  iterator = rx(iterator)
-  each(ary, function (v,k){
-    r.push(iterator(v,k))
-  })
-  return r
-}
-
-var path = exports.path = function (object, path) {
-
-  for (var i in path) {
-    if(object == null) return undefined
-    var key = path[i]
-    object = object[key]
-  }
-  return object
-}
-
-/*
-NOTE: naive implementation. 
-`match` must not contain circular references.
-*/
-
-var setPath = exports.setPath = function (object, path, value) {
-
-  for (var i in path) {
-    var key = path[i]
-    if(object[key] == null) object[key] = ( 
-      i + 1 == path.length ? value : {}
-    )
-    object = object[key]
-  }
-}
-
-var join = exports.join = function (A, B, it) {
-  each(A, function (a, ak) {
-    each(B, function (b, bk) {
-      it(a, b, ak, bk)
-    })
-  })
-}
-
-},{}],78:[function(require,module,exports){
-// If `Date.now()` is invoked twice quickly, it's possible to get two
-// identical time stamps. To avoid generation duplications, subsequent
-// calls are manually ordered to force uniqueness.
-
-var _last = 0
-var _count = 1
-var adjusted = 0
-var _adjusted = 0
-
-module.exports =
-function timestamp() {
-  /**
-  Returns NOT an accurate representation of the current time.
-  Since js only measures time as ms, if you call `Date.now()`
-  twice quickly, it's possible to get two identical time stamps.
-  This function guarantees unique but maybe inaccurate results
-  on each call.
-  **/
-  //uncomment this wen
-  var time = Date.now()
-  //time = ~~ (time / 1000) 
-  //^^^uncomment when testing...
-
-  /**
-  If time returned is same as in last call, adjust it by
-  adding a number based on the counter. 
-  Counter is incremented so that next call get's adjusted properly.
-  Because floats have restricted precision, 
-  may need to step past some values...
-  **/
-  if (_last === time)  {
-    do {
-      adjusted = time + ((_count++) / (_count + 999))
-    } while (adjusted === _adjusted)
-    _adjusted = adjusted
-  }
-  // If last time was different reset timer back to `1`.
-  else {
-    _count = 1
-    adjusted = time
-  }
-  _adjusted = adjusted
-  _last = time
-  return adjusted
-}
-
-},{}],79:[function(require,module,exports){
+},{"./index":83,"./util":89,"iterate":86,"util":23}],85:[function(require,module,exports){
+module.exports=require(41)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/expiry-model/node_modules/scuttlebutt/node_modules/duplex/index.js":41,"_process":8,"stream":21}],86:[function(require,module,exports){
+module.exports=require(42)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/expiry-model/node_modules/scuttlebutt/node_modules/iterate/index.js":42}],87:[function(require,module,exports){
+module.exports=require(43)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/expiry-model/node_modules/scuttlebutt/node_modules/monotonic-timestamp/index.js":43}],88:[function(require,module,exports){
 
 var EventEmitter = require('events').EventEmitter
 
@@ -11764,45 +12592,9 @@ exports.raw = function (stream) {
 }
 
 
-},{"events":5}],80:[function(require,module,exports){
-exports.createId = 
-function () {
-  return [1,1,1].map(function () {
-    return Math.random().toString(16).substring(2).toUpperCase()
-  }).join('')
-}
-
-exports.filter = function (update, sources) {
-  var ts = update[1]
-  var source = update[2]
-  return (!sources || !sources[source] || sources[source] < ts)
-}
-
-exports.protoIsIllegal = function (s) {
-  s.emit('invalid', new Error('"__proto__" is illegal property name'))
-  return null
-}
-
-function invalidUpdate(t) {
-  t.emit('invalid', new Error('invalid update'))
-}
-
-exports.validUpdate = function (t, update) {
-  if(!Array.isArray(update)) return invalidUpdate(t)
-  if('string' !== typeof update[1] || 'number' !== typeof update[2])
-    return invalidUpdate(t)
-}
-
-exports.sort = function (hist) {
-  return hist.sort(function (a, b) {
-    //sort by timestamps, then ids.
-    //there should never be a pair with equal timestamps
-    //and ids.
-    return a[1] - b[1] || (a[2] > b[2] ? 1 : -1)
-  })
-}
-
-},{}],81:[function(require,module,exports){
+},{"events":5}],89:[function(require,module,exports){
+module.exports=require(45)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/expiry-model/node_modules/scuttlebutt/util.js":45}],90:[function(require,module,exports){
 (function (process){
 /* jshint node: true */
 'use strict';
@@ -12502,7 +13294,7 @@ module.exports = function(signalhost, opts) {
 };
 
 }).call(this,require('_process'))
-},{"_process":8,"cog/defaults":82,"cog/extend":83,"cog/getable":84,"rtc-signaller":85,"rtc-tools":109,"rtc-tools/cleanup":105}],82:[function(require,module,exports){
+},{"_process":8,"cog/defaults":91,"cog/extend":92,"cog/getable":93,"rtc-signaller":94,"rtc-tools":118,"rtc-tools/cleanup":114}],91:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -12544,9 +13336,9 @@ module.exports = function(target) {
 
   return target;
 };
-},{}],83:[function(require,module,exports){
-module.exports=require(63)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/cog/extend.js":63}],84:[function(require,module,exports){
+},{}],92:[function(require,module,exports){
+module.exports=require(72)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/cog/extend.js":72}],93:[function(require,module,exports){
 /**
   ## cog/getable
 
@@ -12591,7 +13383,7 @@ module.exports = function(target) {
   };
 };
 
-},{}],85:[function(require,module,exports){
+},{}],94:[function(require,module,exports){
 var extend = require('cog/extend');
 
 module.exports = function(messenger, opts) {
@@ -12600,7 +13392,7 @@ module.exports = function(messenger, opts) {
   }, opts));
 };
 
-},{"./index.js":90,"./primus-loader":102,"cog/extend":92}],86:[function(require,module,exports){
+},{"./index.js":99,"./primus-loader":111,"cog/extend":101}],95:[function(require,module,exports){
 module.exports = {
   // messenger events
   dataEvent: 'data',
@@ -12614,7 +13406,7 @@ module.exports = {
   // leave timeout (ms)
   leaveTimeout: 3000
 };
-},{}],87:[function(require,module,exports){
+},{}],96:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -12720,7 +13512,7 @@ module.exports = function(signaller) {
     }
   };
 };
-},{"cog/extend":92,"cog/logger":95}],88:[function(require,module,exports){
+},{"cog/extend":101,"cog/logger":104}],97:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -12735,7 +13527,7 @@ module.exports = function(signaller, opts) {
     leave: require('./leave')(signaller, opts)
   };
 };
-},{"./announce":87,"./leave":89}],89:[function(require,module,exports){
+},{"./announce":96,"./leave":98}],98:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -12768,7 +13560,7 @@ module.exports = function(signaller, opts) {
     signaller.emit('peer:disconnected', data.id, peer);
   };
 };
-},{}],90:[function(require,module,exports){
+},{}],99:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -13291,13 +14083,13 @@ module.exports = function(messenger, opts) {
   return signaller;
 };
 
-},{"./defaults":86,"./processor":103,"./uuid":104,"cog/defaults":91,"cog/extend":92,"cog/getable":93,"cog/logger":95,"cog/throttle":96,"eventemitter3":97,"rtc-core/detect":100}],91:[function(require,module,exports){
-module.exports=require(82)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-quickconnect/node_modules/cog/defaults.js":82}],92:[function(require,module,exports){
-module.exports=require(63)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/cog/extend.js":63}],93:[function(require,module,exports){
-module.exports=require(84)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-quickconnect/node_modules/cog/getable.js":84}],94:[function(require,module,exports){
+},{"./defaults":95,"./processor":112,"./uuid":113,"cog/defaults":100,"cog/extend":101,"cog/getable":102,"cog/logger":104,"cog/throttle":105,"eventemitter3":106,"rtc-core/detect":109}],100:[function(require,module,exports){
+module.exports=require(91)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-quickconnect/node_modules/cog/defaults.js":91}],101:[function(require,module,exports){
+module.exports=require(72)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/cog/extend.js":72}],102:[function(require,module,exports){
+module.exports=require(93)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-quickconnect/node_modules/cog/getable.js":93}],103:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -13363,9 +14155,9 @@ module.exports = function(input) {
 
   return reNumeric.test(input) ? parseFloat(input) : input;
 };
-},{}],95:[function(require,module,exports){
-module.exports=require(60)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/cog/logger.js":60}],96:[function(require,module,exports){
+},{}],104:[function(require,module,exports){
+module.exports=require(69)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/cog/logger.js":69}],105:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -13418,9 +14210,9 @@ module.exports = function(fn, delay, opts) {
     fn.apply(this, arguments);
   };
 };
-},{}],97:[function(require,module,exports){
-module.exports=require(65)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/eventemitter3/index.js":65}],98:[function(require,module,exports){
+},{}],106:[function(require,module,exports){
+module.exports=require(74)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/eventemitter3/index.js":74}],107:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -13666,7 +14458,7 @@ function createModifiers(modifierStrings) {
   return modifiers;
 }
 
-},{"./mods":99}],99:[function(require,module,exports){
+},{"./mods":108}],108:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -13709,11 +14501,11 @@ exports.len = function(length, padder) {
     return output;
   };
 };
-},{}],100:[function(require,module,exports){
-module.exports=require(67)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/detect.js":67,"detect-browser":101}],101:[function(require,module,exports){
-module.exports=require(68)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/node_modules/detect-browser/browser.js":68}],102:[function(require,module,exports){
+},{}],109:[function(require,module,exports){
+module.exports=require(76)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/detect.js":76,"detect-browser":110}],110:[function(require,module,exports){
+module.exports=require(77)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/node_modules/detect-browser/browser.js":77}],111:[function(require,module,exports){
 /* jshint node: true */
 /* global document, location, Primus: false */
 'use strict';
@@ -13799,7 +14591,7 @@ module.exports = function(signalhost, opts, callback) {
   document.body.appendChild(script);
 };
 
-},{"formatter":98}],103:[function(require,module,exports){
+},{"formatter":107}],112:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -13922,11 +14714,11 @@ module.exports = function(signaller, opts) {
   };
 };
 
-},{"./handlers":88,"cog/jsonparse":94,"cog/logger":95}],104:[function(require,module,exports){
+},{"./handlers":97,"cog/jsonparse":103,"cog/logger":104}],113:[function(require,module,exports){
 // LeverOne's awesome uuid generator
 module.exports = function(a,b){for(b=a='';a++<36;b+=a*51&52?(a^15?8^Math.random()*(a^20?16:4):4).toString(16):'-');return b};
 
-},{}],105:[function(require,module,exports){
+},{}],114:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -13989,7 +14781,7 @@ module.exports = function(pc) {
   }, 100);
 };
 
-},{"cog/logger":112}],106:[function(require,module,exports){
+},{"cog/logger":121}],115:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -14262,7 +15054,7 @@ function couple(pc, targetId, signaller, opts) {
 
 module.exports = couple;
 
-},{"./cleanup":105,"./detect":107,"./monitor":110,"cog/logger":112,"rtc-core/plugin":116,"rtc-taskqueue":117}],107:[function(require,module,exports){
+},{"./cleanup":114,"./detect":116,"./monitor":119,"cog/logger":121,"rtc-core/plugin":125,"rtc-taskqueue":126}],116:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -14274,7 +15066,7 @@ module.exports = couple;
 **/
 module.exports = require('rtc-core/detect');
 
-},{"rtc-core/detect":114}],108:[function(require,module,exports){
+},{"rtc-core/detect":123}],117:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -14367,7 +15159,7 @@ exports.connectionConstraints = function(flags, constraints) {
   return out;
 };
 
-},{"./detect":107,"cog/defaults":111,"cog/logger":112}],109:[function(require,module,exports){
+},{"./detect":116,"cog/defaults":120,"cog/logger":121}],118:[function(require,module,exports){
 /* jshint node: true */
 
 'use strict';
@@ -14460,7 +15252,7 @@ exports.createConnection = function(opts, constraints) {
   }
 };
 
-},{"./couple":106,"./detect":107,"./generators":108,"cog/logger":112,"rtc-core/plugin":116}],110:[function(require,module,exports){
+},{"./couple":115,"./detect":116,"./generators":117,"cog/logger":121,"rtc-core/plugin":125}],119:[function(require,module,exports){
 /* jshint node: true */
 'use strict';
 
@@ -14575,19 +15367,19 @@ function getMappedState(state) {
   return stateMappings[state] || state;
 }
 
-},{"cog/logger":112,"eventemitter3":113}],111:[function(require,module,exports){
-module.exports=require(82)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-quickconnect/node_modules/cog/defaults.js":82}],112:[function(require,module,exports){
-module.exports=require(60)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/cog/logger.js":60}],113:[function(require,module,exports){
-module.exports=require(65)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/eventemitter3/index.js":65}],114:[function(require,module,exports){
-module.exports=require(67)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/detect.js":67,"detect-browser":115}],115:[function(require,module,exports){
-module.exports=require(68)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/node_modules/detect-browser/browser.js":68}],116:[function(require,module,exports){
+},{"cog/logger":121,"eventemitter3":122}],120:[function(require,module,exports){
+module.exports=require(91)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-quickconnect/node_modules/cog/defaults.js":91}],121:[function(require,module,exports){
 module.exports=require(69)
-},{"./detect":114,"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/plugin.js":69}],117:[function(require,module,exports){
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-dcstream/node_modules/cog/logger.js":69}],122:[function(require,module,exports){
+module.exports=require(74)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/eventemitter3/index.js":74}],123:[function(require,module,exports){
+module.exports=require(76)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/detect.js":76,"detect-browser":124}],124:[function(require,module,exports){
+module.exports=require(77)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/node_modules/detect-browser/browser.js":77}],125:[function(require,module,exports){
+module.exports=require(78)
+},{"./detect":123,"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-media/node_modules/rtc-core/plugin.js":78}],126:[function(require,module,exports){
 var detect = require('rtc-core/detect');
 var debug = require('cog/logger')('rtc-taskqueue');
 var zip = require('whisk/zip');
@@ -14876,7 +15668,7 @@ module.exports = function(pc, opts) {
   return tq;
 };
 
-},{"cog/logger":112,"eventemitter3":113,"priorityqueuejs":118,"rtc-core/detect":114,"rtc-core/plugin":116,"rtc-sdpclean":119,"rtc-validator/candidate":121,"whisk/zip":122}],118:[function(require,module,exports){
+},{"cog/logger":121,"eventemitter3":122,"priorityqueuejs":127,"rtc-core/detect":123,"rtc-core/plugin":125,"rtc-sdpclean":128,"rtc-validator/candidate":130,"whisk/zip":131}],127:[function(require,module,exports){
 /**
  * Expose `PriorityQueue`.
  */
@@ -15050,7 +15842,7 @@ PriorityQueue.prototype._swap = function(a, b) {
   this._elements[b] = aux;
 };
 
-},{}],119:[function(require,module,exports){
+},{}],128:[function(require,module,exports){
 var validators = [
   [ /^(a\=candidate.*)$/, require('rtc-validator/candidate') ]
 ];
@@ -15107,7 +15899,7 @@ function detectLineBreak(input) {
   return match && match[0];
 }
 
-},{"rtc-validator/candidate":120}],120:[function(require,module,exports){
+},{"rtc-validator/candidate":129}],129:[function(require,module,exports){
 var debug = require('cog/logger')('rtc-validator');
 var rePrefix = /^(?:a=)?candidate:/;
 var reIP = /^(\d+\.){3}\d+$/;
@@ -15194,9 +15986,9 @@ function validateParts(part, idx) {
   }
 }
 
-},{"cog/logger":112}],121:[function(require,module,exports){
-module.exports=require(120)
-},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-quickconnect/node_modules/rtc-tools/node_modules/rtc-taskqueue/node_modules/rtc-sdpclean/node_modules/rtc-validator/candidate.js":120,"cog/logger":112}],122:[function(require,module,exports){
+},{"cog/logger":121}],130:[function(require,module,exports){
+module.exports=require(129)
+},{"/home/doehlman/code/DamonOehlman/manyfaces/node_modules/rtc-quickconnect/node_modules/rtc-tools/node_modules/rtc-taskqueue/node_modules/rtc-sdpclean/node_modules/rtc-validator/candidate.js":129,"cog/logger":121}],131:[function(require,module,exports){
 /**
   ## zip
 
@@ -15218,7 +16010,7 @@ module.exports = function() {
     }));
   };
 };
-},{}],123:[function(require,module,exports){
+},{}],132:[function(require,module,exports){
 var Vec2 = require('vec2')
 var Rec2 = require('rec2')
 
@@ -15328,7 +16120,7 @@ exports.absolute = function (el, bind) {
 }
 
 
-},{"rec2":124,"vec2":125}],124:[function(require,module,exports){
+},{"rec2":133,"vec2":134}],133:[function(require,module,exports){
 var Vec2 = require('vec2')
 
 var inherits = require('util').inherits
@@ -15390,7 +16182,7 @@ R.area = function () {
   return this.size.x * this.size.y
 }
 
-},{"util":23,"vec2":125}],125:[function(require,module,exports){
+},{"util":23,"vec2":134}],134:[function(require,module,exports){
 ;(function inject(clean, precision, undef) {
 
   function Vec2(x, y) {
@@ -15788,7 +16580,7 @@ R.area = function () {
 
 
 
-},{}],126:[function(require,module,exports){
+},{}],135:[function(require,module,exports){
 function cols (n) {
   return Math.ceil(Math.sqrt(n)) 
 }
@@ -15840,7 +16632,7 @@ module.exports = function (recs, screen, order) {
   })
 }
 
-},{}],127:[function(require,module,exports){
+},{}],136:[function(require,module,exports){
 var grid = require('./grid')
 var vdom = require('vec2-dom')
 
@@ -15879,14 +16671,14 @@ var exports = module.exports = function (element, layout) {
 
 exports.grid = grid
 
-},{"./grid":126,"vec2-dom":123}],128:[function(require,module,exports){
+},{"./grid":135,"vec2-dom":132}],137:[function(require,module,exports){
 var h = require('hyperscript');
 
-module.exports = function(eve) {
+module.exports = function(eve, id) {
   return h('div.face', 'hello');
 };
 
-},{"hyperscript":42}],129:[function(require,module,exports){
+},{"hyperscript":51}],138:[function(require,module,exports){
 var h = require('hyperscript');
 var vdom = require('vec2-dom');
 
@@ -15894,22 +16686,27 @@ module.exports = function(eve) {
   var container = h('div');
   var screen = vdom.screenSize();
 
+  function resizeContainer() {
+    var headerHeight = document.querySelector('header').getBoundingClientRect().height;
+    var size = screen.subtract({ x: 0, y: headerHeight }, true);
+
+    console.log(headerHeight);
+    console.log(size);
+    container.rec.size.set(size);
+  }
+
   eve.on('app:ready', function() {
     // apply the vec2 layout
     require('vec2-layout')(container);
 
-    // initilaise the container size
-    container.rec.size.set(screen);
-
-    screen.change(function() {
-      container.rec.size.set(screen);
-    });
+    resizeContainer();
+    screen.change(resizeContainer);
   });
 
   return container;
 };
 
-},{"hyperscript":42,"vec2-dom":123,"vec2-layout":127}],130:[function(require,module,exports){
+},{"hyperscript":51,"vec2-dom":132,"vec2-layout":136}],139:[function(require,module,exports){
 var h = require('hyperscript');
 var o = require('observable');
 var pull = require('pull-stream');
@@ -15918,6 +16715,7 @@ var po = require('pull-observable');
 module.exports = function(eve) {
   var name = h('input', { placeholder: 'Your Name' });
   var join = h('button', 'Join');
+  var snap = h('button', 'Snap');
 
   pull(
     po(o.input(name)),
@@ -15930,7 +16728,7 @@ module.exports = function(eve) {
     eve('app:join');
   });
 
-  return h('div', { class: 'local-details' }, name, join);
+  return h('header', { class: 'local-details' }, name, join, snap);
 };
 
-},{"hyperscript":42,"observable":50,"pull-observable":51,"pull-stream":53}]},{},[24]);
+},{"hyperscript":51,"observable":59,"pull-observable":60,"pull-stream":62}]},{},[24]);

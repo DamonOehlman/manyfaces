@@ -10,7 +10,11 @@ var quickconnect = require('rtc-quickconnect')('//switchboard.rtc.io', {
   manualJoin: true
 });
 
-var model = require('rtc-mesh')(quickconnect);
+var ExpiryModel = require('expiry-model');
+var model = require('rtc-mesh')(quickconnect, {
+  model: ExpiryModel({ maxAge: 2 })
+});
+
 var faces;
 var parts = [
   require('./parts/header')(eve),
@@ -39,15 +43,20 @@ quickconnect.on('channel:opened:snap', function(id, dc) {
 });
 
 model.on('change', function(key, value) {
-  console.log(key, value);
+  console.log('key: ' + key + ', value: ' + value);
 });
+
+setInterval(function() {
+  faces.appendChild(require('./parts/avatar')(eve));
+}, 1000);
 
 // scaffold out quickconnect
 quickconnect
   .createDataChannel('snap')
   .on('channel:opened:snap', function(id, dc) {
-    faces.appendChild(require('./parts/avatar')(eve));
     prepReceiver(id, dc);
-  });
+  })
+  .on('channel:closed:snap', function(id) {
+  })
 
 eve('app:ready');
