@@ -4608,9 +4608,8 @@ var parts = [
 function prepReceiver(id, dc) {
   dcstream(dc).pipe(concat(function(data) {
     console.log('received data: ', data);
+    prepReceiver(id, dc);
   }));
-
-  prepReceiver(id, dc);
 }
 
 parts.forEach(function(part) {
