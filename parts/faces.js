@@ -7,11 +7,8 @@ module.exports = function(eve) {
 
   function resizeContainer() {
     var headerHeight = document.querySelector('header').getBoundingClientRect().height;
-    var size = screen.subtract({ x: 0, y: headerHeight }, true);
 
-    console.log(headerHeight);
-    console.log(size);
-    container.rec.size.set(size);
+    container.rec.size.set(screen.subtract({ x: 0, y: headerHeight }, true));
   }
 
   eve.on('app:ready', function() {

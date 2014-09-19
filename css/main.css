@@ -16,3 +16,13 @@ header > input {
   flex: 1;
   margin-right: 10px;
 }
+
+.avatar {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.avatar > label {
+  text-align: center;
+}

@@ -1,21 +1,26 @@
 var eve = require('eve');
+var cuid = require('cuid');
 var h = require('hyperscript');
 var media = require('rtc-media');
 var dcstream = require('rtc-dcstream');
 var concat = require('concat-stream');
-var quickconnect = require('rtc-quickconnect')('//switchboard.rtc.io', {
+
+// initialise our own internal uid for tracking eachother
+var uid = localStorage.uid || (localStorage.uid = cuid());
+
+// connect
+var quickconnect = require('rtc-quickconnect')('http://localhost:3000/', {
+  uid: uid,
   iceServers: require('freeice')(),
   room: 'manyfaces',
   reactive: true,
   manualJoin: true
 });
 
-var ExpiryModel = require('expiry-model');
-var model = require('rtc-mesh')(quickconnect, {
-  model: ExpiryModel({ maxAge: 2 })
-});
+var model = require('rtc-mesh')(quickconnect);
 
 var faces;
+var avatars = {};
 var parts = [
   require('./parts/header')(eve),
   faces = require('./parts/faces')(eve)
@@ -33,7 +38,7 @@ parts.forEach(function(part) {
 });
 
 eve.on('name:change', function(value) {
-  model.set('name:' + quickconnect.id, value);
+  model.set(uid + ':name', value);
 });
 
 eve.on('app:join', quickconnect.join);
@@ -43,12 +48,17 @@ quickconnect.on('channel:opened:snap', function(id, dc) {
 });
 
 model.on('change', function(key, value) {
-  console.log('key: ' + key + ', value: ' + value);
-});
+  var parts = key.split(':');
+  var id = parts[0];
+  var avatar = avatars[id];
 
-setInterval(function() {
-  faces.appendChild(require('./parts/avatar')(eve));
-}, 1000);
+  if (! avatar) {
+    avatar = avatars[id] = require('./avatar')(id);
+    faces.appendChild(avatar.container);
+  }
+
+  avatar[parts[1]] = value;
+});
 
 // scaffold out quickconnect
 quickconnect
@@ -57,6 +67,7 @@ quickconnect
     prepReceiver(id, dc);
   })
   .on('channel:closed:snap', function(id) {
-  })
+  });
 
+model.set(uid + ':peerid', quickconnect.id);
 eve('app:ready');
