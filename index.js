@@ -4,6 +4,7 @@ var h = require('hyperscript');
 var media = require('rtc-media');
 var dcstream = require('rtc-dcstream');
 var concat = require('concat-stream');
+var ExpiryModel = require('expiry-model');
 
 // initialise our own internal uid for tracking eachother
 var uid = localStorage.uid || (localStorage.uid = cuid());
@@ -17,7 +18,9 @@ var quickconnect = require('rtc-quickconnect')('http://localhost:3000/', {
   manualJoin: true
 });
 
-var model = require('rtc-mesh')(quickconnect);
+var model = require('rtc-mesh')(quickconnect, {
+  model: new ExpiryModel()
+});
 
 var faces;
 var avatars = {};
@@ -47,7 +50,7 @@ quickconnect.on('channel:opened:snap', function(id, dc) {
   console.log('snap channel opened with peer: ' + id);
 });
 
-model.on('change', function(key, value) {
+model.on('update', function(key, value) {
   var parts = key.split(':');
   var id = parts[0];
   var avatar = avatars[id];
