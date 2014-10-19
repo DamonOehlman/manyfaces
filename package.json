@@ -36,6 +36,7 @@
     "rtc-media": "^1.10.0",
     "rtc-mesh": "^1.0.0",
     "rtc-quickconnect": "^3.2.0",
+    "snapstream": "^1.0.0",
     "vec2-dom": "^1.1.4",
     "vec2-layout": "^0.1.1"
   }
