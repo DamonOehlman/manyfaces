@@ -34,5 +34,9 @@ module.exports = function(eve) {
     eve('app:join');
   });
 
+  snap.addEventListener('click', function() {
+    eve('app:snap');
+  });
+
   return h('header', { class: 'local-details' }, name, join, snap);
 };

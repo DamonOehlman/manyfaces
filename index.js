@@ -5,6 +5,7 @@ var media = require('rtc-media');
 var dcstream = require('rtc-dcstream');
 var concat = require('concat-stream');
 var ExpiryModel = require('expiry-model');
+var snapstream = require('snapstream');
 
 // initialise our own internal uid for tracking eachother
 var uid = localStorage.uid || (localStorage.uid = cuid());
@@ -45,6 +46,8 @@ eve.on('name:change', function(value) {
 });
 
 eve.on('app:join', quickconnect.join);
+eve.on('app:snap', function() {
+});
 
 quickconnect.on('channel:opened:snap', function(id, dc) {
   console.log('snap channel opened with peer: ' + id);
