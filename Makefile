@@ -1,2 +1,2 @@
 bundle:
-	browserify index.js > bundle.js
+	browserify --debug index.js > bundle.js

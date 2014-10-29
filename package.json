@@ -32,10 +32,11 @@
     "observable": "^2.1.3",
     "pull-observable": "^0.1.2",
     "pull-stream": "^2.25.0",
+    "random-name": "^0.1.0",
+    "rtc-capture": "^1.0.2",
     "rtc-dcstream": "^1.1.0",
-    "rtc-media": "^1.10.0",
     "rtc-mesh": "^1.0.0",
-    "rtc-quickconnect": "^3.2.0",
+    "rtc-quickconnect": "^4.0.0",
     "snapstream": "^1.0.0",
     "vec2-dom": "^1.1.4",
     "vec2-layout": "^0.1.1"

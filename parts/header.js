@@ -3,9 +3,10 @@ var o = require('observable');
 var pull = require('pull-stream');
 var po = require('pull-observable');
 var debounce = require('debounce');
+var randomName = require('random-name');
 
 module.exports = function(eve) {
-  var savedName = localStorage.name || '';
+  var savedName = localStorage.name || randomName();
   var name = h('input', { placeholder: 'Your Name', value: savedName });
   var join = h('button', 'Join');
   var snap = h('button', 'Snap');
@@ -38,5 +39,5 @@ module.exports = function(eve) {
     eve('app:snap');
   });
 
-  return h('header', { class: 'local-details' }, name, join, snap);
+  return h('header', { class: 'local-details' }, name, snap);
 };

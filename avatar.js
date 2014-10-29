@@ -5,20 +5,28 @@ function Avatar(id) {
     return new Avatar(id);
   }
 
-  this.nameLabel = h('label');
-  this.container = h('div', { className: 'avatar' }, this.nameLabel);
+  this.img = h('img');
+  this.container = h('div', { className: 'avatar' }, this.img);
 }
 
 module.exports = Avatar;
 var prot = Avatar.prototype;
 
 Object.defineProperty(prot, 'name', {
+  get: function() {
+    return this.img.dataset.name;
+  },
   set: function(value) {
-    this.nameLabel.innerText = value;
+    this.img.dataset.name = value;
   }
 });
 
-Object.defineProperty(prot, 'avatar', {
+Object.defineProperty(prot, 'image', {
+  get: function() {
+    return this.img.src;
+  },
+
   set: function(value) {
+    this.img.src = value;
   }
 });
