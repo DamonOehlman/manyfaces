@@ -3,6 +3,7 @@ body, html {
   height: 100vh;
   overflow: hidden;
   margin: 0;
+  background: #555;
 }
 
 header {
@@ -18,7 +19,6 @@ header > input {
 }
 
 .avatar {
-  background: gray;
   display: flex;
   flex-direction: column;
   justify-content: center;

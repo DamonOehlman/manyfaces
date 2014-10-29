@@ -83,7 +83,7 @@ model.on('update', function(key, value) {
 
   avatar[parts[1]] = value;
 
-  if ((avatar.name || avatar.image) && (! avatar.container.parentNode)) {
+  if (avatar.image && (! avatar.container.parentNode)) {
     faces.appendChild(avatar.container);
   }
 });
