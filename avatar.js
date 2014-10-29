@@ -14,10 +14,10 @@ var prot = Avatar.prototype;
 
 Object.defineProperty(prot, 'name', {
   get: function() {
-    return this.img.dataset.name;
+    return this.container.dataset.name;
   },
   set: function(value) {
-    this.img.dataset.name = value;
+    this.container.dataset.name = value;
   }
 });
 
